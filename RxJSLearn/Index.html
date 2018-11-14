@@ -7,7 +7,7 @@
     <script src="node_modules/rx-lite/rx.lite.js"></script>
 </head>
 <body>
-    <input type="text" id="input">
+    <input type="text" id="input" style="width: 100%;">
     <p>
         <select id="results" size="10"></select>
     </p>
@@ -17,32 +17,170 @@
     var $input = $("#input"),
         $results = $("#results");
 
+    let textPosition;
+    $input.on("keydown", function(e){
+        if (e.which === 40) {
+            $results.focus();
+            $("#results :first-child").attr('selected', true);
+        }
+    });
+
+    $results.on('click', function(){
+        replaceWordInInput();
+    });
+    $results.on('keydown', function(e){
+        if(e.which === 13) replaceWordInInput();
+    });
+
+    function replaceWordInInput () {
+        let position = textPosition;
+        let leftPart = $input.val().substring(0, position);
+        let rightPart = $input.val().substring(position);
+        let leftPartArray = leftPart.split(' ');
+        let rightPartArray = rightPart.split(' ');
+        leftPartArray.pop()
+        rightPartArray.shift();
+        let result = leftPartArray.join(' ')
+            + ' '
+            + $("#results option:selected").text()
+            + ' '
+            + rightPartArray.join(' ');
+
+        $input.val(result);
+        $input.focus();
+        //setCaretPosition('input', position);
+    };
+
+    function setCaretPosition(elemId, caretPos) {
+        var el = document.getElementById(elemId);
+
+        el.value = el.value;
+        // ^ this is used to not only get "focus", but
+        // to make sure we don't have it everything -selected-
+        // (it causes an issue in chrome, and having it doesn't hurt any other browser)
+
+        if (el !== null) {
+
+            if (el.createTextRange) {
+                var range = el.createTextRange();
+                range.move('character', caretPos);
+                range.select();
+                return true;
+            }
+
+            else {
+                // (el.selectionStart === 0 added for Firefox bug)
+                if (el.selectionStart || el.selectionStart === 0) {
+                    el.focus();
+                    el.setSelectionRange(caretPos, caretPos);
+                    return true;
+                }
+
+                else  { // fail city, fortunately this never happens (as far as I've tested) :)
+                    el.focus();
+                    return false;
+                }
+            }
+        }
+    }
+
+    function getTextWidth(text, font) {
+        // re-use canvas object for better performance
+        var canvas = getTextWidth.canvas || (getTextWidth.canvas = document.createElement("canvas"));
+        var context = canvas.getContext("2d");
+        context.font = font;
+        var metrics = context.measureText(text);
+        return metrics.width;
+    }
+
+    function getCurrentWord (e) {
+        let target = e.target;
+        let position = target.selectionStart;
+        textPosition = position;
+        let leftPart = target.value.substring(0, position);
+        let rightPart = target.value.substring(position);
+        let leftPartArray = leftPart.split(' ');
+        let result = leftPartArray.pop() + rightPart.split(' ')[0];
+        let leftPartCatted = leftPartArray.join(' ') + ' ';
+        let resultsMargin = getTextWidth(leftPartCatted, $input.css('font-family'));
+        $results.css('margin-left', resultsMargin);
+        return result;
+    };
+
     var keyups = Rx.Observable.fromEvent($input, 'keyup')
-        .map(e => e.target.value)
+        .map(e => getCurrentWord(e))
         .filter(text => text.length > 2);
 
     var throttled = keyups.throttle(500);
 
     var distinct = throttled.distinctUntilChanged();
 
-    function searchWikipedia(term) {
+    function getSuggestions(term) {
+        var jsonObjects = [{ Text: term }];
         return $.ajax({
-            url: 'http://en.wikipedia.org/w/api.php',
-            dataType: 'jsonp',
-            data: {
-                action: 'opensearch',
-                format: 'json',
-                search: term
+            url: 'https://api.cognitive.microsofttranslator.com/detect?api-version=3.0',
+            method: 'POST',
+            dataType: 'json',
+            contentType: 'application/json',
+            data: JSON.stringify(jsonObjects),
+            processData: false,
+            cache: false,
+            headers: {
+                "Ocp-Apim-Subscription-Key": "7c20485e6c6d49fc80cbc38a05843d99",
+                "Content-Type": "application/json"
+            }
+        }).promise()
+            .then(d => {
+                if (d.length > 0 && d[0].language === 'ru') {
+                    return getTranslate(term);
+                }
+                else {
+                    return getDatamuseSuggestions(term);
+                }
+            });
+    }
+
+    function getTranslate(term) {
+        var jsonObjects = [{ Text: term }];
+        return $.ajax({
+            url: 'https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=ru&to=en',
+            method: 'POST',
+            dataType: 'json',
+            contentType: 'application/json',
+            data: JSON.stringify(jsonObjects),
+            processData: false,
+            cache: false,
+            headers: {
+                "Ocp-Apim-Subscription-Key": "7c20485e6c6d49fc80cbc38a05843d99",
+                "Content-Type": "application/json"
             }
         }).promise();
     }
 
-    var suggestion = distinct.flatMapLatest(searchWikipedia);
+    function getDatamuseSuggestions(term) {
+        return $.ajax({
+            url: 'https://api.datamuse.com/sug',
+            dataType: 'json',
+            crossDomain: true,
+            data: {
+                s: term
+            },
+            cache: false
+        }).promise();
+    }
+
+    var suggestion = distinct.flatMapLatest(getSuggestions);
 
     suggestion.subscribe(data => {
-        var res = data[1];
+        var res;
+        if (Array.isArray(data[0].translations)) {
+            res = [{word: data[0].translations[0].text}];
+        }
+        else {
+            res = data;
+        }
         $results.empty();
-        $.each(res, (_, value) => $('<option>' + value + '</option>').appendTo($results));
+        $.each(res, (_, value) => $('<option>' + value.word + '</option>').appendTo($results));
     }, error => {
         $results.empty();
         $('<option>Error: ' + error + '</option>').appendTo($results);
